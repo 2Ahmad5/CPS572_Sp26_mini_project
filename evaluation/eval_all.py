@@ -18,6 +18,10 @@ import json
 import logging
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from tinker_cookbook.model_info import get_recommended_renderer_name
 
 logging.basicConfig(level=logging.INFO)
@@ -43,13 +47,14 @@ async def run_core(base_model, checkpoint_path, renderer_name, temperature,
         max_tokens=1024, limit=limit, log_dir=log_dir, verbose=verbose,
     )
 
-    # 1. IFEval
+    # 1. IFEval — short responses, cap at 512 to halve sampling cost
     logger.info("=" * 60)
     logger.info("TASK 1/3: IFEval (Instruction Following)")
     logger.info("=" * 60)
     try:
         from evaluation.eval_ifeval import run as run_ifeval
-        result = await run_ifeval(argparse.Namespace(**task_args))
+        ifeval_args = {**task_args, "max_tokens": 512}
+        result = await run_ifeval(argparse.Namespace(**ifeval_args))
         all_metrics.update(result["metrics"])
         task_results["ifeval"] = result
     except Exception as e:

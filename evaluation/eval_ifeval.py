@@ -107,7 +107,7 @@ def main():
     p.add_argument("--renderer_name", type=str, default=None)
     p.add_argument("--temperature", type=float, default=0.0)
     p.add_argument("--top_p", type=float, default=1.0)
-    p.add_argument("--max_tokens", type=int, default=1024)
+    p.add_argument("--max_tokens", type=int, default=512)  # IFEval responses are short; 1024 was wasteful
     p.add_argument("--limit", type=int, default=None, help="Max samples (None=all 541)")
     p.add_argument("--log_dir", type=str, default=None)
     p.add_argument("--verbose", action="store_true")

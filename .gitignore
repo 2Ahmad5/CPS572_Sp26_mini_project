@@ -16,6 +16,13 @@ logs/
 # OS
 .DS_Store
 
+# Secrets
+.env
+
+# Training artifacts
+training/data/*.jsonl
+evaluation/submission_*.json
+
 # IDE
 .claude/
 .vscode/
