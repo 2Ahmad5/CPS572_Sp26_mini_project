@@ -1,5 +1,34 @@
 # 4/23 Overnight session summary
 
+## FINAL SUBMISSION (decontaminated)
+
+**R13-clean avg_norm 1.5800** — `evaluation/submission.json`
+Checkpoint: `tinker://053a90e6-4963-5594-8436-53b20ab0769f:train:0/sampler_weights/final`
+
+| Metric | Baseline | R13 | Delta vs baseline |
+|---|---|---|---|
+| IFEval | 45.0 | **71.74%** | +26.74pp |
+| GSM8K | 50.0 | **78.01%** | +28.01pp |
+| HumanEval | 30.0 | **47.56%** | +17.56pp |
+| **avg_norm** | 1.0000 | **1.5800** | **+0.580** |
+
+Pipeline: base `Llama-3.1-8B` → R11 SFT on `r1_clean.jsonl` (no Magicoder-Evol) →
+R12 3-way mixed GRPO (IF+math+code verifiers, 15 cycled steps) →
+R13 BoN MBPP distillation (113 subprocess-verified rollouts).
+
+**Integrity:** All hard contamination gates pass on every training JSONL used.
+Derivative-contamination deep audit finds 12/164 HumanEval function-name matches
+(all generic Python like `return fib(n-1)+fib(n-2)`) vs 37/164 in the previously-
+contaminated lineage. Magicoder-Evol-Instruct was removed as the primary
+contamination source.
+
+**Dirty-lineage context (no longer submitted):** R10 ran 1.6808 but relied on
+Magicoder-Evol HumanEval derivatives. Removing them cost -0.117 avg_norm
+(entirely HumanEval 55.49 → 47.56), which matches the 22% contamination rate
+the audit found. R10 is archived as `submission_r10.json`.
+
+---
+
 ## Contamination finding (IMPORTANT)
 
 The R1 contamination audit discovered that `ise-uiuc/Magicoder-Evol-Instruct-110K`
