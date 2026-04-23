@@ -152,6 +152,23 @@ async def _sample_and_score(
     return (question, best_resp, best_score)
 
 
+def _load_extra_prompts(path: Path) -> list[dict]:
+    """Load {text, code, tests} rows from a prep_candidate_datasets-style JSONL."""
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if r.get("text") and r.get("tests"):
+                rows.append({"text": r["text"], "code": r.get("code", ""), "tests": list(r["tests"])})
+    return rows
+
+
 async def run(args):
     sc = tinker.ServiceClient()
     sampling_client = await sc.create_sampling_client_async(model_path=args.checkpoint)
@@ -161,7 +178,18 @@ async def run(args):
 
     log.info("Building HumanEval deny-set for MBPP decontamination ...")
     deny = build_deny_ngrams()
-    rows = _load_mbpp_decontaminated(deny)[: args.n_prompts]
+    rows = _load_mbpp_decontaminated(deny)
+
+    # If an --extra_prompts file is given, append those (already pre-decontam'd
+    # by prep_candidate_datasets.py). Useful for R14 RSFT where we want more
+    # prompt coverage than the 120-row MBPP sanitized split gives.
+    if args.extra_prompts:
+        extra = _load_extra_prompts(Path(args.extra_prompts))
+        log.info("Loaded %d extra prompts from %s", len(extra), args.extra_prompts)
+        rows.extend(extra)
+
+    rows = rows[: args.n_prompts]
+    log.info("Using %d prompts total for BoN rollout", len(rows))
 
     sem = asyncio.Semaphore(args.concurrency)
 
@@ -216,6 +244,9 @@ def main():
     p.add_argument("--max_tokens", type=int, default=1024)
     p.add_argument("--concurrency", type=int, default=8)
     p.add_argument("--output", required=True)
+    p.add_argument("--extra_prompts", default=None,
+                   help="JSONL of extra prompts ({text,code,tests}) to append to "
+                        "MBPP sanitized. Already-decontaminated at build time.")
     p.add_argument("--smoke", action="store_true",
                    help="Smoke mode: 25 prompts × 4 samples")
     args = p.parse_args()

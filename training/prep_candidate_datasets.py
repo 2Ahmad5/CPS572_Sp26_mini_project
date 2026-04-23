@@ -188,9 +188,18 @@ def build_acecode(
                 )
             if kept >= max_rows:
                 break
-            # AceCode fields: question, inferred_code (solutions), test (test cases)
-            question = row.get("question") or row.get("prompt")
-            solution = row.get("inferred_code") or row.get("response") or row.get("code") or row.get("solution")
+            # AceCode fields: id, source, question, test_cases, inferences (list of
+            # {completion, ...}), context_messages. We use the first completion
+            # as the assistant response for SFT.
+            question = row.get("question")
+            inferences = row.get("inferences") or []
+            solution = None
+            if isinstance(inferences, list) and inferences:
+                first = inferences[0] or {}
+                if isinstance(first, dict):
+                    solution = first.get("completion")
+            if not solution:
+                solution = row.get("inferred_code") or row.get("response") or row.get("code")
             if not question or not solution:
                 dropped_missing += 1
                 continue
