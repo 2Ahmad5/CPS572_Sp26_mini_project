@@ -102,6 +102,24 @@ RUN_CONFIGS: dict[str, dict] = {
         test_size=500,
         wandb_name="r6_enhanced_8b",
     ),
+    # R11: SFT on r1_clean (no Magicoder-Evol-Instruct → no HumanEval derivative
+    # contamination). Same hyperparameters as R6-enhanced so we can fairly
+    # compare clean vs contaminated-base.
+    "r11_clean_8b": dict(
+        model_name="meta-llama/Llama-3.1-8B",
+        data_file="training/data/r1_clean.jsonl",
+        log_path="logs/r11_clean_8b",
+        learning_rate=2.83e-4,
+        lora_rank=32,
+        batch_size=128,
+        max_length=2048,
+        num_epochs=1,
+        save_every=1000,
+        eval_every=500,
+        infrequent_eval_every=0,
+        test_size=500,
+        wandb_name="r11_clean_8b",
+    ),
     "r8_rft_8b": dict(
         # RFT phase: second SFT pass on verifier-filtered rollouts from R6.
         # Lower LR (5e-5) prevents drift from R6's established capabilities.

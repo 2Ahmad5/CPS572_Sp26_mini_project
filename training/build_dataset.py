@@ -73,6 +73,22 @@ CONFIGS: dict[str, dict[str, int]] = {
         # IF bucket
         "allenai/tulu-3-sft-personas-instruction-following": 30_000,
     },
+    # Same mix as r1_enhanced but with Magicoder-Evol-Instruct replaced by
+    # more bigcode + tulu-code. Use this for strict-decontam rebuild; see
+    # training/data/contamination_report_r1.md for rationale.
+    "r1_clean": {
+        # Math bucket
+        "openai/gsm8k": 7_473,
+        "nvidia/OpenMathInstruct-2": 100_000,
+        "meta-math/MetaMathQA": 50_000,
+        "allenai/tulu-3-sft-personas-math-grade": 50_000,
+        # Code bucket (Magicoder-Evol-Instruct removed; compensating with more
+        # bigcode + tulu-code to keep code share roughly comparable).
+        "allenai/tulu-3-sft-personas-code": 45_000,  # was 30K
+        "bigcode/self-oss-instruct-sc2-exec-filter-50k": 45_000,  # was 30K
+        # IF bucket
+        "allenai/tulu-3-sft-personas-instruction-following": 30_000,
+    },
 }
 
 MAX_LEN_TOKENS = 3072

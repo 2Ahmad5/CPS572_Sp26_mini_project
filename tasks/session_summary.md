@@ -1,7 +1,44 @@
 # 4/23 Overnight session summary
 
+## Contamination finding (IMPORTANT)
+
+The R1 contamination audit discovered that `ise-uiuc/Magicoder-Evol-Instruct-110K`
+contains **derivative contamination** of HumanEval. The 13-gram word filter at build
+time didn't catch them because the text has been "Evol-Instruct" paraphrased, but:
+
+- 67 HumanEval function signatures appear in r1_enhanced.jsonl
+- 14 rows have BOTH `is_palindrome` AND `make_palindrome` signatures (HumanEval/10)
+- Those rows reproduce HumanEval/10's distinctive examples (`make_palindrome('cat') → 'catac'`) verbatim
+
+Our hard gates (EXACT + SUBSTRING) pass at **0 hits** — no verbatim leakage of
+test prompts or canonical solutions. The contamination is structural / semantic.
+
+This is a weaker form of contamination than verbatim copying. The 13-gram standard
+(BigCode / StarCoder) considers our training data clean. But a strict reviewer
+could argue that Evol-paraphrased HumanEval is still "training on test data."
+
+**If strict decontamination matters:** drop Magicoder-Evol-Instruct from
+`training/data_sources.py:SOURCES`, rebuild r1_enhanced, retrain R6 → R8 → R9.
+Cost ~$15-20. Not within this session's budget.
+
+**Disclosure:** this finding is included in the final report.
+
 ## Headline
-_(to be filled in once R9 eval completes)_
+
+**R9 beats R8-BoN across all three metrics: avg_norm 1.6734 vs 1.6528 (+0.0206).**
+
+| Metric | R8-BoN (prior) | R9 (new best) | Δ |
+|---|---|---|---|
+| IFEval | 70.91 | **72.02** | +1.11 |
+| GSM8K | 78.70 | **79.53** | +0.83 |
+| HumanEval | 54.27 | **54.88** | +0.61 |
+| avg_norm | 1.6528 | **1.6734** | **+0.0206** |
+
+R9 checkpoint: `tinker://f4555916-c448-5313-b152-d49b9398e402:train:0/sampler_weights/final`.
+`evaluation/submission.json` updated.
+
+R10 (cycled 3-way GRPO, 15 steps from R9 final) is currently running to see if more
+steps help further. Monitoring in progress.
 
 ## What ran this session
 

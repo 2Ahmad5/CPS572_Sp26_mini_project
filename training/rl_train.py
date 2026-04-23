@@ -143,15 +143,15 @@ RUN_CONFIGS: dict[str, dict] = {
         # = 7 batches) exhausts and training stops early. R9 actual step count
         # was 7. To force longer training, set total_batches below.
     ),
-    # R10: same mix as R9 but explicitly cycles the MBPP source by setting
-    # total_batches=60. Each MBPP prompt is visited ~8x but with different GRPO
-    # rollouts each time — reward signal is not stale because the policy is
-    # changing between visits.
-    "r10_grpo_3way_cycle_8b": dict(
+    # R12: clean-lineage 3-way GRPO. Same hyperparameters as R9 but starts from
+    # R11 (SFT on r1_clean, no Magicoder-Evol contamination). Replaces R9 as the
+    # contamination-free equivalent. Uses total_batches=15 (cycled) for longer
+    # training than R9's 7 natural steps.
+    "r12_grpo_3way_clean_8b": dict(
         model_name="meta-llama/Llama-3.1-8B",
         renderer_name="role_colon",
-        load_checkpoint_path=None,
-        log_path="logs/r10_grpo_3way_cycle_8b",
+        load_checkpoint_path=None,  # set to R11 final at launch
+        log_path="logs/r12_grpo_3way_clean_8b",
         lora_rank=32,
         learning_rate=1.5e-5,
         kl_penalty_coef=0.05,
@@ -159,10 +159,35 @@ RUN_CONFIGS: dict[str, dict] = {
         groups_per_batch=48,
         max_tokens=1024,
         temperature=1.0,
-        save_every=15,
-        eval_every=15,
-        max_steps=60,
-        total_batches=60,  # forces cycling on the short source (MBPP)
+        save_every=5,
+        eval_every=5,
+        max_steps=15,
+        total_batches=15,
+        wandb_name="r12_grpo_3way_clean_8b",
+        mixed_weights=[0.34, 0.33, 0.33],
+    ),
+    # R10: same mix as R9 but explicitly cycles the MBPP source by setting
+    # total_batches=N. Each MBPP prompt is visited ~N/7 times but with different
+    # GRPO rollouts each time — reward signal is not stale because the policy
+    # is changing between visits.
+    # Started from R9 final (not R8-BoN) to compound gains. Kept short (15 steps)
+    # to keep total session budget under the $35 soft cap after R8 iteration.
+    "r10_grpo_3way_cycle_8b": dict(
+        model_name="meta-llama/Llama-3.1-8B",
+        renderer_name="role_colon",
+        load_checkpoint_path=None,
+        log_path="logs/r10b_grpo_3way_cycle_8b",
+        lora_rank=32,
+        learning_rate=1.5e-5,
+        kl_penalty_coef=0.05,
+        group_size=8,
+        groups_per_batch=48,
+        max_tokens=1024,
+        temperature=1.0,
+        save_every=5,
+        eval_every=5,
+        max_steps=15,
+        total_batches=15,  # forces cycling on the short source (MBPP, 7 natural batches)
         wandb_name="r10_grpo_3way_cycle_8b",
         mixed_weights=[0.34, 0.33, 0.33],
     ),

@@ -247,6 +247,15 @@ SOURCES: list[SourceSpec] = [
     # (path, name, split, adapter, bucket)
     # Dropped on cost-audit 2026-04-19: Magicoder-OSS (redundant with Magicoder-Evol,
     # same distillation lineage) and no_robots (1% slice, unmeasurable signal).
+    #
+    # Magicoder-Evol-Instruct-110K (2026-04-23 finding): contains Evol-Instruct
+    # paraphrases of HumanEval problems — the 13-gram filter doesn't catch them
+    # because text was evolved, but function signatures match verbatim and
+    # distinctive examples like `make_palindrome('cat') -> 'catac'` appear
+    # identically. 67/377K rows in r1_enhanced match HumanEval func-sigs.
+    # Kept in `SOURCES` for now (R6→R8→R9 already trained with it); for any
+    # strict-decontam rebuild, add `("ise-uiuc/Magicoder-Evol-Instruct-110K", ...)`
+    # to `SOURCES_EXCLUDED` and rebuild from r1_enhanced_clean target.
     ("openai/gsm8k", "main", "train", adapt_gsm8k_train, "math"),
     ("nvidia/OpenMathInstruct-2", None, "train_1M", adapt_openmathinstruct2, "math"),
     ("meta-math/MetaMathQA", None, "train", adapt_metamathqa, "math"),
@@ -256,3 +265,9 @@ SOURCES: list[SourceSpec] = [
     ("bigcode/self-oss-instruct-sc2-exec-filter-50k", None, "train", adapt_bigcode_self_oss, "code"),
     ("allenai/tulu-3-sft-personas-instruction-following", None, "train", adapt_persona_if, "if"),
 ]
+
+# Sources known to contain derivative contamination. Not auto-excluded — the
+# rebuild script is responsible for filtering these if a clean build is desired.
+SOURCES_EXCLUDED_FOR_STRICT_DECONTAM = {
+    "ise-uiuc/Magicoder-Evol-Instruct-110K": "Evol-Instruct paraphrase of HumanEval problems (see training/data/contamination_report_r1.md)",
+}

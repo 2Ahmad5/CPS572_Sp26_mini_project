@@ -1,7 +1,7 @@
 """
-Post-R9 orchestrator. Runs AFTER `training.rl_train --config r9_grpo_3way_8b`
-finishes. Picks the best R9 checkpoint by training-reward heuristic and
-evaluates it end-to-end.
+Post-RL orchestrator. Runs AFTER an RL config
+(e.g. `training.rl_train --config r9_grpo_3way_8b` or r10) finishes.
+Picks the best checkpoint by training-reward heuristic and evaluates it end-to-end.
 
 Heuristic: rank saved checkpoints (steps in checkpoints.jsonl) by a simple
 weighted sum that tracks what we care about (IF + math + code in the same
@@ -16,6 +16,7 @@ Also runs an eval on the final checkpoint for comparison.
 
 Usage:
     python -m training.post_r9
+    python -m training.post_r9 --run r10_grpo_3way_cycle_8b --label r10
     python -m training.post_r9 --skip-final
 """
 
@@ -32,16 +33,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(mes
 log = logging.getLogger("post_r9")
 
 REPO = Path(__file__).resolve().parent.parent
-METRICS = REPO / "logs" / "r9_grpo_3way_8b" / "metrics.jsonl"
-CHECKPOINTS = REPO / "logs" / "r9_grpo_3way_8b" / "checkpoints.jsonl"
 SUBMISSION_DIR = REPO / "evaluation"
 
 
-def load_metrics() -> list[dict]:
-    if not METRICS.exists():
-        raise SystemExit(f"Missing {METRICS} — R9 has not produced metrics yet.")
+def load_metrics(run_dir: Path) -> list[dict]:
+    path = run_dir / "metrics.jsonl"
+    if not path.exists():
+        raise SystemExit(f"Missing {path} — run has not produced metrics yet.")
     out = []
-    with open(METRICS) as f:
+    with open(path) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -53,11 +53,12 @@ def load_metrics() -> list[dict]:
     return out
 
 
-def load_checkpoints() -> list[dict]:
-    if not CHECKPOINTS.exists():
-        raise SystemExit(f"Missing {CHECKPOINTS} — R9 saved no checkpoints yet.")
+def load_checkpoints(run_dir: Path) -> list[dict]:
+    path = run_dir / "checkpoints.jsonl"
+    if not path.exists():
+        raise SystemExit(f"Missing {path} — run saved no checkpoints yet.")
     out = []
-    with open(CHECKPOINTS) as f:
+    with open(path) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -117,16 +118,23 @@ def avg_norm(sub: dict) -> float | None:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--run", default="r9_grpo_3way_8b",
+                   help="Run directory name (default: r9_grpo_3way_8b)")
+    p.add_argument("--label", default="r9",
+                   help="Label for submission files (default: r9)")
+    p.add_argument("--prior-best-file", default="submission_r9.json",
+                   help="Prior-best submission JSON to compare against")
     p.add_argument("--skip-final", action="store_true",
                    help="Only eval the best-by-reward checkpoint, not the final step.")
     args = p.parse_args()
 
-    metrics = load_metrics()
-    ckpts = load_checkpoints()
+    run_dir = REPO / "logs" / args.run
+    metrics = load_metrics(run_dir)
+    ckpts = load_checkpoints(run_dir)
     if not ckpts:
         raise SystemExit("No checkpoints saved — nothing to eval.")
 
-    log.info("Loaded %d metrics rows, %d checkpoints", len(metrics), len(ckpts))
+    log.info("Loaded %d metrics rows, %d checkpoints from %s", len(metrics), len(ckpts), run_dir)
 
     by_name = {c["name"]: c for c in ckpts}
     non_final = [c for c in ckpts if c.get("name") != "final"]
@@ -143,7 +151,7 @@ def main():
 
     results = {}
     for label, sampler_path in candidates:
-        out_path = SUBMISSION_DIR / f"submission_r9_{label}.json"
+        out_path = SUBMISSION_DIR / f"submission_{args.label}_{label}.json"
         sub = eval_checkpoint(sampler_path, out_path)
         if sub is None:
             continue
@@ -152,11 +160,11 @@ def main():
         log.info("  %s -> avg_norm=%.4f", label, norm or 0.0)
 
     # Compare to prior best
-    r8_bon_path = SUBMISSION_DIR / "submission_r8_bon.json"
-    r8_bon_norm = None
-    if r8_bon_path.exists():
-        r8_bon_norm = avg_norm(json.load(open(r8_bon_path)))
-        log.info("R8-BoN (prior best): avg_norm=%.4f", r8_bon_norm or 0.0)
+    prior_path = SUBMISSION_DIR / args.prior_best_file
+    prior_norm = None
+    if prior_path.exists():
+        prior_norm = avg_norm(json.load(open(prior_path)))
+        log.info("Prior best (%s): avg_norm=%.4f", prior_path.name, prior_norm or 0.0)
 
     if not results:
         log.error("No candidates evaluated successfully")
@@ -164,16 +172,15 @@ def main():
 
     best = max(results.items(), key=lambda kv: kv[1][0] or 0.0)
     best_label, (best_norm, best_path, best_sub_path) = best
-    log.info("R9 best candidate: %s avg_norm=%.4f", best_label, best_norm or 0.0)
+    log.info("%s best candidate: %s avg_norm=%.4f", args.label.upper(), best_label, best_norm or 0.0)
 
-    if r8_bon_norm is None or (best_norm or 0.0) > r8_bon_norm:
-        # Update submission.json
+    if prior_norm is None or (best_norm or 0.0) > prior_norm:
         target = SUBMISSION_DIR / "submission.json"
         data = json.load(open(best_sub_path))
         json.dump(data, open(target, "w"), indent=2)
-        log.info("Updated %s with R9 best checkpoint (%s)", target, best_label)
+        log.info("Updated %s with %s best checkpoint (%s)", target, args.label.upper(), best_label)
     else:
-        log.info("R9 did not beat R8-BoN; keeping existing submission.json")
+        log.info("%s did not beat prior best; keeping existing submission.json", args.label.upper())
 
 
 if __name__ == "__main__":
