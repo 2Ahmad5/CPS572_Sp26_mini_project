@@ -153,12 +153,12 @@ def humaneval_func_signatures() -> list[tuple[str, str]]:
 _CHUNK_BYTES = 40_000_000  # 40 MB per chunk
 
 
-def _load_training_index(path: Path):
+def _load_training_index(path: Path, build_ngrams: bool = True):
     """Walk a training JSONL once, build:
        - exact_set: set of normalized message strings (any role)
        - any_chunks: list of '\\x00'-joined normalized ANY-role chunks, each ~40MB
        - assistant_chunks: list of '\\x00'-joined normalized ASSISTANT chunks
-       - ngram_set: union of all 8-grams across any-role messages
+       - ngram_set: union of all 8-grams across any-role messages (empty if not build_ngrams)
        - rows, msgs counts
     """
     exact_set: set[str] = set()
@@ -214,7 +214,8 @@ def _load_training_index(path: Path):
                     asst_size += len(norm_c) + 1
                     if asst_size >= _CHUNK_BYTES:
                         _flush_asst()
-                ngram_set.update(_ngrams(_words(content), 8))
+                if build_ngrams:
+                    ngram_set.update(_ngrams(_words(content), 8))
                 msgs += 1
     _flush_any()
     _flush_asst()
@@ -241,12 +242,13 @@ def audit_file(
     test_texts: dict[str, list[tuple[str, str]]],
     he_sigs: list[tuple[str, str]],
     ngram_n: int = 8,
+    build_ngrams: bool = True,
 ) -> dict:
     """Test-centric scan: one pass over training to build indices, then each
     test text checked against the indices. O(|training|) + O(|tests|) instead
     of O(|training| × |tests|)."""
     log.info("Indexing %s ...", path)
-    idx = _load_training_index(path)
+    idx = _load_training_index(path, build_ngrams=build_ngrams)
     any_bytes = sum(len(c) for c in idx["any_chunks"])
     asst_bytes = sum(len(c) for c in idx["assistant_chunks"])
     log.info(
@@ -394,6 +396,8 @@ def main() -> int:
     p.add_argument("--files", nargs="+", default=DEFAULT_FILES,
                    help="Training JSONLs to audit.")
     p.add_argument("--ngram", type=int, default=8)
+    p.add_argument("--no-ngram", action="store_true",
+                   help="Skip the 8-gram overlap check (noisy + memory-heavy on 400K-row files).")
     p.add_argument("--strict-exit", action="store_true",
                    help="Exit non-zero if ANY exact/substring/func-sig hit found.")
     p.add_argument("--out", default=str(REPORT_PATH))
@@ -417,7 +421,8 @@ def main() -> int:
         if not path.exists():
             log.warning("Skipping missing file: %s", path)
             continue
-        results.append(audit_file(path, test_texts, he_sigs, ngram_n=args.ngram))
+        results.append(audit_file(path, test_texts, he_sigs, ngram_n=args.ngram,
+                                  build_ngrams=not args.no_ngram))
 
     report = summarize(results)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)

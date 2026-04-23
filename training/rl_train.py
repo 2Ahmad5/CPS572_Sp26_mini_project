@@ -139,6 +139,32 @@ RUN_CONFIGS: dict[str, dict] = {
                       # training reward; cost cap prefers early stop.
         wandb_name="r9_grpo_3way_8b",
         mixed_weights=[0.34, 0.33, 0.33],  # [IF, math, code]
+        # NOTE: without total_batches, MBPP (~120 decontam'd rows / 16 groups/batch
+        # = 7 batches) exhausts and training stops early. R9 actual step count
+        # was 7. To force longer training, set total_batches below.
+    ),
+    # R10: same mix as R9 but explicitly cycles the MBPP source by setting
+    # total_batches=60. Each MBPP prompt is visited ~8x but with different GRPO
+    # rollouts each time — reward signal is not stale because the policy is
+    # changing between visits.
+    "r10_grpo_3way_cycle_8b": dict(
+        model_name="meta-llama/Llama-3.1-8B",
+        renderer_name="role_colon",
+        load_checkpoint_path=None,
+        log_path="logs/r10_grpo_3way_cycle_8b",
+        lora_rank=32,
+        learning_rate=1.5e-5,
+        kl_penalty_coef=0.05,
+        group_size=8,
+        groups_per_batch=48,
+        max_tokens=1024,
+        temperature=1.0,
+        save_every=15,
+        eval_every=15,
+        max_steps=60,
+        total_batches=60,  # forces cycling on the short source (MBPP)
+        wandb_name="r10_grpo_3way_cycle_8b",
+        mixed_weights=[0.34, 0.33, 0.33],
     ),
 }
 
@@ -173,11 +199,18 @@ def build_config(name: str, load_checkpoint_path: str | None) -> Config:
                 seed=0,
             )
             sources.append(code_builder)
-        dataset_builder = InterleavedRLDatasetBuilder(
+        kwargs = dict(
             sources=sources,
             weights=cfg["mixed_weights"],
             groups_per_batch=cfg["groups_per_batch"],
         )
+        # If `total_batches` is in the config, pass it through so the interleaver
+        # cycles short sources (e.g. MBPP sanitized at ~120 rows) rather than
+        # terminating at the smallest-source exhaustion point. Without this,
+        # max_steps=60 is silently truncated to 7 when MBPP runs out.
+        if cfg.get("total_batches"):
+            kwargs["total_batches"] = cfg["total_batches"]
+        dataset_builder = InterleavedRLDatasetBuilder(**kwargs)
     else:
         dataset_builder = IFEvalRLDatasetBuilder(
             batch_size=cfg["groups_per_batch"],

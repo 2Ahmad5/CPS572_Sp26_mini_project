@@ -140,6 +140,27 @@ RUN_CONFIGS: dict[str, dict] = {
         wandb_name="r8_bon_8b",
         load_checkpoint_path="tinker://d8ff2c4d-59b6-589a-b8ce-b258ce3a2d97:train:0/weights/final",
     ),
+    # R9-BoN: same recipe as R8-BoN but seeded from R9 (3-way GRPO) best. Kept
+    # small (3 epochs, batch 16) because the dataset is tiny (~100-150 MBPP rows
+    # that passed the verifier). If R9 ate into HumanEval via RL, BoN recovers
+    # it by SFT'ing on known-correct code outputs.
+    # data_file + load_checkpoint_path overridable via CLI at launch time.
+    "r9_bon_8b": dict(
+        model_name="meta-llama/Llama-3.1-8B",
+        data_file="training/data/r9_bon.jsonl",
+        log_path="logs/r9_bon_8b",
+        learning_rate=5e-5,
+        lora_rank=32,
+        batch_size=16,
+        max_length=2048,
+        num_epochs=3,
+        save_every=10,
+        eval_every=10,
+        infrequent_eval_every=0,
+        test_size=10,
+        wandb_name="r9_bon_8b",
+        load_checkpoint_path=None,  # set at launch to R9 best
+    ),
 }
 
 
@@ -208,9 +229,17 @@ def print_checkpoint_list(log_path: str, model_name: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, choices=list(RUN_CONFIGS))
+    parser.add_argument("--load_checkpoint_path", default=None,
+                        help="Override load_checkpoint_path for configs like r9_bon_8b.")
+    parser.add_argument("--data_file", default=None,
+                        help="Override data_file for configs that build data at launch time.")
     args = parser.parse_args()
 
     cfg = RUN_CONFIGS[args.config]
+    if args.load_checkpoint_path is not None:
+        cfg["load_checkpoint_path"] = args.load_checkpoint_path
+    if args.data_file is not None:
+        cfg["data_file"] = args.data_file
     log.info("Launching run: %s", args.config)
     log.info("  model=%s  data=%s  log=%s", cfg["model_name"], cfg["data_file"], cfg["log_path"])
     log.info("  lr=%s  rank=%d  batch=%d  max_length=%d  epochs=%d",
