@@ -1,0 +1,156 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{1.2ex}{0.6ex}
+\titlespacing*{\subsection}{0pt}{0.8ex}{0.4ex}
+\setlength{\parskip}{3pt}
+
+\title{\vspace{-2em}CPS572 Final Project --- Multi-Task LoRA Fine-Tuning on Tinker}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-3em}
+
+\paragraph{Final submission.} R16 checkpoint, Llama-3.1-8B LoRA, greedy decoding. IFEval \textbf{73.01\%} (baseline 45), GSM8K \textbf{77.56\%} (baseline 50), HumanEval \textbf{53.05\%} (baseline 30). Average-normalized score \textbf{1.647}. Training from base to R16: $\sim$\$35 of Tinker credits over two sessions; full iteration spend including dead-end experiments, $\sim$\$85.
+
+\section{How we got there}
+
+We started by running the baseline evals on 1B / 3B / 8B so we could trust the scorer before writing any training code. The 8B base came in at 22.2 / 9.7 / 0.0, which told us scaling matters enormously and HumanEval's scorer is strict about formatting.
+
+Then one smoke run on 3B --- 76 SFT steps on a tiny mix of GSM8K + Magicoder + Tulu-personas-IF --- to verify the pipeline. That run taught us the single highest-leverage fix of the project: appending \texttt{ANSWER: N} to every math training row. GSM8K jumped 9.2\% $\rightarrow$ 32.5\% in 76 steps on the same model without any new capability. The scorer was looking for a sentinel our math data wasn't producing. We baked that into every math adapter in \texttt{training/data\_sources.py} before running anything at scale.
+
+From there we followed a stepwise ladder: 3B SFT kitchen-sink, 3B GRPO-IFEval to try RL cheap, 8B SFT, 8B multi-task RL, BoN distillation on top. The 3B $\rightarrow$ 8B scaling step was the biggest single jump on every metric.
+
+\section{Core methodology}
+
+\textbf{Base model.} \texttt{meta-llama/Llama-3.1-8B} (not Instruct; Tinker doesn't ship an 8B Instruct checkpoint). LoRA rank 32 on all linear layers. Learning rate $2.83 \times 10^{-4}$ for SFT and $1.5 \times 10^{-5}$ for RL, both derived from the LoRA-without-Regret hidden-size-scaling formula (Biderman 2024). One epoch, linear schedule, batch size 128, max sequence length 2048. The 2048 cap is deliberate: eval sampling is capped at 1024 tokens and we saw early checkpoints produce 3000-token chains-of-thought that got truncated before the answer landed.
+
+\textbf{Data mix.} Seven sources at $\sim$317K rows total: GSM8K train, OpenMathInstruct-2 (100K), MetaMathQA (50K), Tulu-3-personas-math-grade (50K), Tulu-3-personas-code (45K), BigCode self-oss-instruct (45K), Tulu-3-personas-instruction-following (30K). Math dominates (51\%) because two of the three benchmarks are math-heavy. Later we added 15K rows of KodCode-V1 as a clean code booster --- more on that in \S\ref{sec:contam}.
+
+\textbf{Multi-task mixed GRPO.} Once the SFT was good, we ran 3-way mixed GRPO using \texttt{tinker\_cookbook.rl.interleaved.InterleavedRLDatasetBuilder} with weights 0.34/0.33/0.33 for IF/math/code. Groups never cross domains within a batch, so GRPO's within-group advantage centering stays intact. Rewards:
+\begin{itemize}
+  \setlength\itemsep{-0.2em}
+  \item \textbf{IFEval}: \texttt{verify\_all\_instructions} from the inspect-evals harness. Binary: all constraints pass or zero.
+  \item \textbf{Math}: extract a number from the response (\texttt{ANSWER:} regex, fall back to last-numeric), compare to ground truth with \texttt{math.isclose}. Our training format and the eval scorer agree on the sentinel.
+  \item \textbf{Code}: a custom environment we wrote (\texttt{training/rl\_code\_env.py}). Extracts \texttt{python} fenced code from the response, writes it plus each MBPP test to a temp file, runs \texttt{subprocess.run} with a 5-second timeout, and rewards 1.0 iff all tests pass. Standard code-RL recipes use Modal or SandboxFusion; we ran the subprocess locally because we control inputs end-to-end and the 80 lines of verifier code were cleaner than an external dep.
+\end{itemize}
+
+Config: group size 8, 48 groups per batch (16 per domain), KL $\beta$=0.05, max tokens 1024, 15 total batches with the MBPP source explicitly \emph{cycled} via \texttt{total\_batches=15}. That last flag was load-bearing: the default Interleaved builder terminates at the smallest-source exhaustion point, so without cycling our RL run died at step 7 (MBPP has $\sim$120 HumanEval-decontaminated rows, giving $\sim$7 natural batches at 16 groups/batch).
+
+\textbf{Best-of-N rejection-sampling distillation.} After the RL step, we sampled 16 MBPP rollouts per prompt at temperature 1.0 from the RL'd checkpoint, ran each through the same subprocess verifier, kept only winners, and did a 3-epoch LoRA-SFT pass on the kept rollouts. We used both MBPP sanitized train (120 rows after HumanEval decontamination) and the ``full'' non-sanitized split (another 254 decontaminated rows), giving $\sim$350 golden rows per round. The logic: RL improves policy under rollout variance; BoN crystallizes the model's best-case outputs into supervised examples so the greedy-eval distribution matches.
+
+\section{Contamination: the story that forced us to backtrack} \label{sec:contam}
+
+Halfway through the project we had a checkpoint --- call it R10 --- at avg-norm 1.68, visibly the strongest so far. Before committing to it as the submission, we wrote a deep contamination audit (\texttt{training/verify\_no\_test\_leak\_deep.py}): an Aho-Corasick automaton over $\sim$7,500 distinctive fingerprints per benchmark (function signatures, \texttt{>>>} example calls, doctest expected-outputs, docstring sentences, canonical solution lines). We ran it against every materialized JSONL in the training lineage.
+
+The audit lit up. 37 of 164 HumanEval problems had matching fingerprints, and tracing them showed the exact same docstring examples appearing verbatim in training rows. Example: \texttt{>>>\ how\_many\_times('aaaa', 'aa')} (HumanEval/18) appeared in a Magicoder row that had been paraphrased around the example with the Evol-Instruct ``illuminate the course of'' prompt style. Our 13-gram filter hadn't caught it because Evol-Instruct rewrites the prose while preserving distinctive examples.
+
+This hit the project's hard rule: training on test data = zero. We dropped \texttt{Magicoder-Evol-Instruct-110K} from the source list entirely, built \texttt{r1\_clean.jsonl}, and retrained. Cost: $\sim$-0.12 avg-norm (HE 55.5 $\rightarrow$ 46.3 on the SFT-only baseline). Entirely expected --- the audit found 22\% of HumanEval items were Evol-paraphrased into Magicoder, so removing them removed whatever ``boost'' that contamination was giving us. The new clean checkpoint (R11) came in at 1.537 vs R6-dirty's 1.60.
+
+To replace the removed signal with a clean source, we added KodCode-V1 (447K rows, ships a \texttt{benchmark\_similarity} score per row against HumanEval/MBPP/BigCodeBench/LiveCodeBench). We pre-filtered with similarity $<0.5$ (stricter than their default 0.95), a HumanEval function-name blocklist (\texttt{is\_palindrome}, \texttt{make\_palindrome}, etc. matching HumanEval canonicals), and our existing 13-gram deny-set. Result: 30K filtered rows, audit clean. We subsampled 15K of those into \texttt{r1\_clean\_v2.jsonl}. The KodCode addition alone, before any RL, recovered most of the HumanEval we'd lost (R15 at 53.05 vs R11 at 46.34).
+
+We also wrote a TA-standard reimplementation of the Piazza-approved 8-gram filter and ran it end-to-end. It flags $\sim$10\% of our training rows --- which sounds bad until you inspect the flags. Every flagged 8-gram is either (a) a shared IFEval constraint template (``your answer must contain a title, wrapped in double angular brackets''), (b) an official GSM8K train/test template-sharing (the same stamps-problem skeleton with different names and numbers, which is a property of the benchmark itself, not our contamination), or (c) a generic Python idiom (\texttt{return fib(n-1)+fib(n-2)}). No test prompt, question, or canonical solution is reproduced verbatim.
+
+\section{What worked, what didn't}
+
+\subsection*{The final ladder (clean lineage)}
+\vspace{-0.5em}
+{\footnotesize
+\begin{tabular}{llrrrr}
+\toprule
+Run & Change from prior & IFEval & GSM8K & HumanEval & avg\_norm \\
+\midrule
+R11 & SFT on r1\_clean\_v2 (KodCode already mixed in later runs) & 70.07 & 75.51 & 46.34 & 1.537 \\
+R12 & + 3-way GRPO & 71.48 & 77.94 & 46.34 & 1.564 \\
+R13 & + BoN-SFT (113 MBPP rows) & 71.74 & 78.01 & 47.56 & 1.580 \\
+R14 & + RSFT (355 rows, MBPP + MBPP-full) & 71.30 & 80.29 & 50.00 & 1.619 \\
+R15 & SFT on r1\_clean\_v2 (+15K KodCode) & 70.62 & 77.63 & 53.05 & 1.630 \\
+\textbf{R16} & + 3-way GRPO (\emph{final submission}) & \textbf{73.01} & \textbf{77.56} & \textbf{53.05} & \textbf{1.647} \\
+R17 & + BoN-SFT on R16 (\emph{regressed}) & 72.82 & 78.77 & 50.61 & 1.627 \\
+\bottomrule
+\end{tabular}}
+
+\vspace{0.5em}
+\textbf{Things that moved the needle:} the 3B $\rightarrow$ 8B scale-up; the \texttt{ANSWER: N} format alignment; tightening max\_length from 3072 to 2048; adding BigCode/self-oss-instruct to the SFT code share; adding KodCode for HE recovery after removing Magicoder; 3-way mixed RL (avoided single-task regression that killed our early R3 experiment).
+
+\textbf{Negative results we kept seeing.} Single-task IFEval-only GRPO on 3B (``R3'' in our notes) gained +3.8 IFEval but lost -1.0 GSM and -1.8 HumanEval, net zero on avg\_norm. We dropped single-task RL entirely after that. Rejection-sampling FT from the R6 checkpoint on verifier-correct rollouts (``R8-RFT'') regressed -0.01 vs the SFT base, so we skipped it as an intermediate stage. R17 (BoN on top of R16) regressed -0.02 because R16 already had HE=53 saturated from KodCode-heavy SFT; piling MBPP-style distillation on top shifted the code distribution away from KodCode's winning shape, dropping HE to 50.6. That last one was a useful lesson: BoN helps when the base is under-fit on the target, not when it's already fit.
+
+\textbf{Dropped training sources.} \texttt{Magicoder-OSS-Instruct-75K} was redundant with Magicoder-Evol in early cost audits (same distillation lineage, no measurable lift). \texttt{HuggingFaceH4/no\_robots} was a 1\% slice with no signal we could isolate. Both removed. Then the big one: \texttt{Magicoder-Evol-Instruct-110K} removed for HumanEval derivative contamination. Each removal was paired with a re-audit.
+
+\textbf{Surprises.} On R14 we saw an unexpected GSM8K cross-task bump (+2.28pp) from what was ostensibly a code-only BoN round. Best guess: cleaner code-rollout structure taught the model to lay out math reasoning in cleaner steps too, and the GSM scorer rewards that. We did not chase this further.
+
+\section{Extensions beyond vanilla SFT}
+
+Four things we'd flag as substantive extensions:
+\begin{enumerate}
+  \setlength\itemsep{-0.2em}
+  \item \textbf{Custom 3-way GRPO with a code verifier built from scratch.} Most code-RL setups ship with Modal/SandboxFusion; we use a subprocess + timeout. It's $\sim$80 LOC and runs inside the cookbook's \texttt{ProblemEnv} abstraction the same way the IF and math verifiers do.
+  \item \textbf{Aho-Corasick fingerprint contamination audit.} Catches Evol-Instruct-style derivative leakage (preserved examples, paraphrased prose) that word-level n-gram filters miss. This is what caught Magicoder's HumanEval leakage.
+  \item \textbf{Rejection-sampling SFT as a compounding step after RL.} R14 on dirty lineage added +0.04 avg-norm from 355 verifier-passing rollouts. Cheap, repeatable.
+  \item \textbf{KodCode integration with strict pre-filtering.} Similarity threshold + function-name blocklist + 13-gram denylist, giving us a clean code-SFT source to replace Magicoder without a HE performance cliff.
+\end{enumerate}
+
+\section{Reproducing R16}
+
+\begin{verbatim}
+# 1. Build clean SFT data
+python -m training.build_dataset --config r1_clean --output training/data/r1_clean.jsonl \
+    --max_len_tokens 2048
+python -m training.prep_candidate_datasets --which kodcode --kodcode_max 30000
+
+# 2. Merge: append 15K KodCode rows into r1_clean_v2.jsonl
+python -m training.make_r1_clean_v2
+
+# 3. R15 SFT (~90-120 min, ~$10)
+python -m training.sft_train --config r15_clean_v2_8b
+
+# 4. R16 3-way GRPO from R15 final (~20 min, ~$3)
+python -m training.rl_train --config r16_grpo_3way_clean_v2_8b \
+    --load_checkpoint_path "tinker://<R15_RUN_ID>:train:0/weights/final"
+
+# 5. Evaluate
+python -m evaluation.eval_all \
+    --checkpoint_path "tinker://<R16_RUN_ID>:train:0/sampler_weights/final" \
+    --base_model meta-llama/Llama-3.1-8B
+\end{verbatim}
+
+End-to-end: $\sim$2.5-3 hours wall-clock, $\sim$\$15 Tinker credits (if Tinker is stable --- we had a 48-min outage mid-SFT at one point).
+
+\clearpage
+\section*{LLM Usage}
+
+We used \textbf{Claude Code} (Anthropic's CLI agent on Opus 4.7) throughout this project for idea generation, code writing, and testing. Specific uses:
+
+\begin{itemize}
+\setlength\itemsep{-0.2em}
+\item \textbf{Code writing and refactoring.} The RL environment classes (\texttt{rl\_code\_env.py}, mods to \texttt{rl\_math\_env.py}), the contamination audit scripts (\texttt{verify\_no\_test\_leak.py}, \texttt{verify\_no\_test\_leak\_deep.py}, \texttt{ta\_standard\_audit.py}), the candidate-dataset pre-filter (\texttt{prep\_candidate\_datasets.py}), the BoN driver modifications (adding \texttt{--extra\_prompts}), and the SFT/RL config additions were drafted with Claude and then reviewed, tested, and revised by us.
+\item \textbf{Debugging and iteration orchestration.} Interpreting Tinker API errors, a Windows cp1252 encoding bug in \texttt{tinker\_cookbook/utils/logtree.py} that crashed RL on non-ASCII rollouts, and parallelizing the audit pipeline with Aho-Corasick.
+\item \textbf{Idea generation.} Initial candidates for what to try next at each iteration boundary (multi-task RL recipes, BoN distillation, KodCode integration, dataset filtering strategies).
+\end{itemize}
+
+Team members exercised human judgment and research taste on top of the LLM output: reading actual training logs, comparing eval numbers across runs, deciding when a run had regressed vs. converged, choosing between LLM-surfaced alternatives based on what made sense for our specific bottleneck. We caught a handful of hallucinations (e.g., the LLM suggested evaluating on datasets that didn't exist in the form it described, cited paper claims we had to verify, proposed RL hyperparameters that were outside the cookbook's valid ranges). The $\sim$22\%-HumanEval derivative contamination finding in Magicoder-Evol was something we specifically pushed back on --- our deep audit flagged it, the LLM initially framed it as ``common-phrase false positives,'' and only after we asked it to trace specific rows did it confirm the contamination and recommend retraining. Research and dataset selection (KodCode, AceCoder, OpenCodeInstruct, OpenCodeReasoning as candidates) was human-led using literature review; the LLM summarized papers we'd selected.
+
+\section*{Tinker Feedback}
+
+\textbf{Hardest parts / where we got stuck.}
+\begin{itemize}
+\setlength\itemsep{-0.2em}
+\item \textbf{Project structure on day one.} The RL pipeline especially --- \texttt{ProblemEnv} vs.\ \texttt{EnvGroupBuilder} vs.\ \texttt{RLDataset} vs.\ \texttt{RLDatasetBuilder} --- wasn't obvious from a first read of the cookbook. We spent a while on the R0/R3 smoke runs just getting the interfaces right. Once we understood that \texttt{ProblemEnv} subclasses just need \texttt{get\_question()}/\texttt{check\_answer()}, writing new verifiers was easy.
+\item \textbf{Silent dataset exhaustion.} \texttt{InterleavedRLDatasetBuilder} defaults to the smallest-source exhaustion as its total-batches count. Our R9 stopped at step 7 when we'd configured max\_steps=60 because MBPP (after decontamination) had only $\sim$120 prompts. A clearer warning or a default that cycles short sources would've saved hours of debugging.
+\item \textbf{Platform reliability.} During one SFT run the session heartbeat failed for 48 minutes before reconnecting. Training resumed cleanly, but watching the run stall was nerve-wracking. We also patched \texttt{tinker\_cookbook/utils/logtree.py} to use \texttt{encoding="utf-8"} because the HTML log writer crashed under Windows cp1252 when rollouts contained non-ASCII characters.
+\end{itemize}
+
+\textbf{Cookbook usage.} Yes, heavily. We plugged it into Claude Code as context so the LLM could read the cookbook's modules directly when writing our own code against them. That combination was what made the project tractable --- Claude could say ``here's how \texttt{InterleavedRLDatasetBuilder} expects your \texttt{RLDatasetBuilder} to be shaped,'' quoting the actual source. Helpful: the \texttt{rl.interleaved}, \texttt{rl.problem\_env}, and \texttt{supervised.train} modules --- well-factored, minimal glue needed. Missing: a clear example of plugging a non-sandboxed local verifier (subprocess-based) into GRPO. The cookbook's \texttt{code\_rl} recipe is Qwen+DeepCoder-flavored and didn't port to our Llama+MBPP setup without rewriting most of the env layer.
+
+\textbf{One thing that would make Tinker significantly better.} More control over the model internals than fine-tuning alone. Examples: reading hidden-state activations at a specific layer on a batch of inputs (to do probing / representation-level analysis), patching residual-stream contributions during a rollout (to do causal intervention or activation steering), or running inference with logit-lens-style per-layer decodes. Many of the interesting research techniques --- activation steering, representation-engineering, early-exit behavior, monitoring internal circuits during RL --- aren't accessible through a pure finetuning-and-sampling interface. Even read-only access to a few hidden states per token would open up a lot.
+
+\textbf{Would we use Tinker again?} Yes. The LoRA + managed-inference combo is productive, especially paired with an LLM coding assistant that has the cookbook as context. For production training we'd want stronger reliability guarantees (the mid-run outage and Windows encoding patch both cost time), but for project-scale research it was the right tool.
+
+\end{document}
