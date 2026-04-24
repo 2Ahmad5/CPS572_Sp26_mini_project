@@ -166,6 +166,27 @@ RUN_CONFIGS: dict[str, dict] = {
         wandb_name="r12_grpo_3way_clean_8b",
         mixed_weights=[0.34, 0.33, 0.33],
     ),
+    # R16: 3-way GRPO clean from R15 final. Same hyperparameters as R12; the
+    # only difference is the SFT base (R15 trained on r1_clean_v2 with KodCode added).
+    "r16_grpo_3way_clean_v2_8b": dict(
+        model_name="meta-llama/Llama-3.1-8B",
+        renderer_name="role_colon",
+        load_checkpoint_path=None,  # set to R15 final at launch
+        log_path="logs/r16_grpo_3way_clean_v2_8b",
+        lora_rank=32,
+        learning_rate=1.5e-5,
+        kl_penalty_coef=0.05,
+        group_size=8,
+        groups_per_batch=48,
+        max_tokens=1024,
+        temperature=1.0,
+        save_every=5,
+        eval_every=5,
+        max_steps=15,
+        total_batches=15,
+        wandb_name="r16_grpo_3way_clean_v2_8b",
+        mixed_weights=[0.34, 0.33, 0.33],
+    ),
     # R10: same mix as R9 but explicitly cycles the MBPP source by setting
     # total_batches=N. Each MBPP prompt is visited ~N/7 times but with different
     # GRPO rollouts each time — reward signal is not stale because the policy
