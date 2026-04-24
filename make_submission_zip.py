@@ -75,6 +75,12 @@ INCLUDE_FILES = [
     # ----- Setup / entry -----
     "README.md",
     "PROJECT.md",
+
+    # ----- Dataset reproduction documentation -----
+    # Lists every raw HF source, every preprocessing/filtering decision, and
+    # the exact end-to-end commands to rebuild every training JSONL from
+    # scratch. Includes determinism notes and integrity-verification summary.
+    "DATA_REPRODUCTION.md",
 ]
 
 # Files the TA might appreciate for reproduction but not strictly necessary.
