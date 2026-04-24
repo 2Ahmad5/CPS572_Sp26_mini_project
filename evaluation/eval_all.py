@@ -14,9 +14,11 @@ Usage:
 
 import argparse
 import asyncio
+import importlib
 import json
 import logging
 import os
+import sys
 
 from tinker_cookbook.model_info import get_recommended_renderer_name
 
@@ -24,6 +26,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 EVAL_DIR = os.path.dirname(os.path.abspath(__file__))
+if EVAL_DIR not in sys.path:
+    sys.path.insert(0, EVAL_DIR)
+
+
+def _import_run_fn(module_basename):
+    """Import run() from eval module in both script and package modes."""
+    try:
+        return importlib.import_module(f"evaluation.{module_basename}").run
+    except ModuleNotFoundError:
+        return importlib.import_module(module_basename).run
 
 async def run_core(base_model, checkpoint_path, renderer_name, temperature,
                    top_p, limit, log_dir, verbose):
@@ -48,7 +60,7 @@ async def run_core(base_model, checkpoint_path, renderer_name, temperature,
     logger.info("TASK 1/3: IFEval (Instruction Following)")
     logger.info("=" * 60)
     try:
-        from evaluation.eval_ifeval import run as run_ifeval
+        run_ifeval = _import_run_fn("eval_ifeval")
         result = await run_ifeval(argparse.Namespace(**task_args))
         all_metrics.update(result["metrics"])
         task_results["ifeval"] = result
@@ -62,7 +74,7 @@ async def run_core(base_model, checkpoint_path, renderer_name, temperature,
     logger.info("TASK 2/3: GSM8K (Math Reasoning)")
     logger.info("=" * 60)
     try:
-        from evaluation.eval_gsm8k import run as run_gsm8k
+        run_gsm8k = _import_run_fn("eval_gsm8k")
         result = await run_gsm8k(argparse.Namespace(**task_args))
         all_metrics.update(result["metrics"])
         task_results["gsm8k"] = result
@@ -76,7 +88,7 @@ async def run_core(base_model, checkpoint_path, renderer_name, temperature,
     logger.info("TASK 3/3: HumanEval (Code Generation)")
     logger.info("=" * 60)
     try:
-        from evaluation.eval_code import run as run_code
+        run_code = _import_run_fn("eval_code")
         result = await run_code(argparse.Namespace(**task_args))
         all_metrics.update(result["metrics"])
         task_results["humaneval"] = result
